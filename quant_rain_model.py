@@ -258,6 +258,47 @@ def analyze_performance(predictions, actuals, dates, climatology, threshold_buy=
             
     return pnl_curve, pd.DataFrame(trades)
 
+    return pnl_curve, pd.DataFrame(trades)
+
+def run_backtest_smart_monsoon(predictions, actuals, dates, climatology, threshold_buy=5, threshold_sell=2):
+    capital = 100000 
+    pnl_curve = [capital]
+    tick_size = 1000 
+    
+    for pred, actual, date in zip(predictions, actuals, dates):
+        market_price = climatology.get(date.dayofyear, 0)
+        month = date.month
+        
+        position = 0
+        
+        # --- LONG LOGIC (Aggressive) ---
+        # We allow buying in any month if the signal is strong
+        if pred > (market_price + threshold_buy):
+            position = 1 
+            
+        # --- SHORT LOGIC (Conservative) ---
+        # RULE: NEVER Short in June (6) or July (7). 
+        # Only Short in Aug/Sept/Oct when volatility drops.
+        elif pred < (market_price - threshold_sell):
+            if month not in [6, 7]: 
+                position = -1 
+            else:
+                position = 0 # Stay Cash during dangerous months
+            
+        # P&L Calculation
+        daily_pnl = 0
+        if position == 1:
+            daily_pnl = (actual - market_price) * tick_size
+        elif position == -1:
+            daily_pnl = (market_price - actual) * tick_size
+            
+        cost = 200 if position != 0 else 0 
+        
+        capital += (daily_pnl - cost)
+        pnl_curve.append(capital)
+        
+    return pnl_curve
+
 def grid_search_optimization(predictions, actuals, dates, climatology):
     # Define the "Parameter Space"
     buy_range = range(5, 30, 2)    # Test Buying at 5mm up to 30mm (Alpha Threshold)
@@ -412,6 +453,22 @@ if __name__ == "__main__":
         print(trade_log.sort_values(by='PnL', ascending=True).head(5)[['Date', 'Type', 'Pred', 'Market', 'Actual', 'PnL']])
 
         print("\nAnalysis Complete. Graphs are open.")
+        
+        # --- EXECUTE SMART STRATEGY ---
+        print("\n--- 5. Smart Monsoon Strategy (Risk Management) ---")
+        equity_smart = run_backtest_smart_monsoon(xgb_preds, actuals, pred_dates, climatology,
+                                                threshold_buy=5, threshold_sell=1)
+
+        print(f"Original Alpha Capital: ₹{equity[-1]:,.0f}")
+        print(f"Smart Strategy Capital: ₹{equity_smart[-1]:,.0f}")
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(equity[1:], label='Alpha Strategy', color='green', alpha=0.6)
+        plt.plot(equity_smart[1:], color='purple', label='Smart Strategy (No July Shorts)', linewidth=2)
+        plt.title("Backtest Comparison: Alpha vs Smart Strategy")
+        plt.legend()
+        plt.yscale('log')
+        plt.grid(True, alpha=0.3)
         plt.show() # Final blocking call to keep windows open
 
     else:
