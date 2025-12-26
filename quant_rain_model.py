@@ -312,6 +312,45 @@ def run_backtest_smart_monsoon(predictions, actuals, dates, climatology, thresho
         
     return pnl_curve, pd.DataFrame(trades)
 
+def run_backtest_liquidity_constrained(predictions, actuals, dates, climatology, threshold_buy=5, threshold_sell=2):
+    capital = 100000 
+    pnl_curve = [capital]
+    tick_size = 1000 
+    
+    for pred, actual, date in zip(predictions, actuals, dates):
+        market_price = climatology.get(date.dayofyear, 0)
+        
+        # Volatility-Based Slippage Model
+        # Heuristic: Higher predicted rain = Higher panic = Wider Spreads
+        volatility_factor = pred / 20.0 
+        current_slippage = 0.5 + max(0, volatility_factor)
+        
+        position = 0
+        
+        # execution Price (Worse than Market)
+        buy_cost_price = market_price + current_slippage
+        sell_cost_price = market_price - current_slippage
+        
+        # Signal Generation (Must overcome slippage)
+        if pred > (buy_cost_price + threshold_buy):
+            position = 1 
+        elif pred < (sell_cost_price - threshold_sell):
+            position = -1 
+            
+        # P&L Calculation (Using Execution Price)
+        daily_pnl = 0
+        if position == 1:
+            daily_pnl = (actual - buy_cost_price) * tick_size
+        elif position == -1:
+            daily_pnl = (sell_cost_price - actual) * tick_size
+            
+        cost = 200 if position != 0 else 0 
+        
+        capital += (daily_pnl - cost)
+        pnl_curve.append(capital)
+        
+    return pnl_curve
+
 def grid_search_optimization(predictions, actuals, dates, climatology):
     # Define the "Parameter Space"
     buy_range = range(5, 30, 2)    # Test Buying at 5mm up to 30mm (Alpha Threshold)
@@ -490,7 +529,27 @@ if __name__ == "__main__":
         plt.legend()
         plt.yscale('log')
         plt.grid(True, alpha=0.3)
-        plt.show() # Final blocking call to keep windows open
+        plt.draw()
+        plt.pause(0.1)
+
+        # --- EXECUTE REALITY CHECK (LIQUIDITY CONSTRAINED) ---
+        print("\n--- 6. Reality Check (Liquidity Constrained) ---")
+        equity_real = run_backtest_liquidity_constrained(xgb_preds, actuals, pred_dates, climatology, 
+                                                         threshold_buy=5, 
+                                                         threshold_sell=1)
+
+        print(f"Paper Profit (Perfect World): ₹{equity[-1]:,.0f}")
+        print(f"Real Profit (With Slippage):  ₹{equity_real[-1]:,.0f}")
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(equity_real[1:], color='black', label='Liquidity Constrained P&L')
+        plt.title("The 'Real World' P&L (Slippage Included)")
+        plt.axhline(100000, color='r', linestyle='--')
+        plt.legend()
+        plt.yscale('log')
+        plt.grid(True, alpha=0.3)
+        plt.show() # Final blocking call
+
 
     else:
         print("Failed to fetch data. Pipeline aborted.")
