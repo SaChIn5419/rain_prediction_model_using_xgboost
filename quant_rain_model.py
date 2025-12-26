@@ -310,7 +310,8 @@ if __name__ == "__main__":
         plt.title(f"Real Data Model Comparison: {LOCATION} ({test_df.index[0].year}-{test_df.index[-1].year})")
         plt.ylabel("Rainfall (mm)")
         plt.legend()
-        plt.show()
+        plt.draw()
+        plt.pause(0.1) # Non-blocking pause to render plot
 
         # --- EXECUTE GRID SEARCH ---
         optimization_results = grid_search_optimization(xgb_preds, actuals)
