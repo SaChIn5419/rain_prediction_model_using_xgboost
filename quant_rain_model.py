@@ -6,6 +6,7 @@ from scipy.stats import gamma
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
+import seaborn as sns
 
 import os
 
@@ -19,6 +20,7 @@ def get_real_indian_rainfall(lat, lon, start_year, end_year, cache_file="mumbai_
     if os.path.exists(cache_file):
         print(f"📂 Loading data from cache: {cache_file}")
         df = pd.read_csv(cache_file, index_col='date', parse_dates=True)
+        df.index = pd.to_datetime(df.index) # Ensure index is DatetimeIndex
         return df
 
     # 2. Fetch from API
@@ -166,6 +168,85 @@ class XGBoostWeatherModel:
         final_preds = np.where(prob_wet > 0.5, pred_amount, 0)
         return final_preds, processed['rain'].values
 
+def run_backtest(predictions, actuals, threshold_buy=10, threshold_sell=2):
+    """
+    Simulates a P&L (Profit & Loss) curve for a trading strategy.
+    """
+    capital = 100000 # Starting Capital (₹)
+    pnl_curve = [capital]
+    tick_size = 1000 # ₹1000 per mm movement
+    
+    positions = [] # Track trade direction
+    
+    for pred, actual in zip(predictions, actuals):
+        # 1. Generate Signal
+        position = 0
+        if pred > threshold_buy:
+            position = 1  # Long (Betting on Heavy Rain)
+        elif pred < threshold_sell:
+            position = -1 # Short (Betting on Dry Day)
+            
+        # 2. Calculate Daily P&L
+        # Profit = Position * (Actual Rain - Market Expectation)
+        # We assume Market Expectation is the "Lag 1" (Naïve Forecast)
+        # (In reality, market expectation is the consensus forecast)
+        market_expectation = pred # Simplifying: Assuming we trade against a "dumb" market
+        
+        # If we went Long, we want Actual > Market
+        daily_pnl = position * (actual - market_expectation) * tick_size
+        
+        # Transaction Cost (Bid-Ask Spread)
+        cost = 500 if position != 0 else 0 
+        
+        capital += (daily_pnl - cost)
+        pnl_curve.append(capital)
+        positions.append(position)
+        
+    return pnl_curve, positions
+
+def grid_search_optimization(predictions, actuals):
+    # Define the "Parameter Space"
+    buy_range = range(10, 50, 2)   # Test Buying at 10mm up to 50mm (heavier storms)
+    sell_range = range(0, 5, 1)    # Test Selling at 0mm to 5mm (dry days)
+    
+    results = []
+    
+    print("⚙️ Running Grid Search on Strategy Parameters...")
+    
+    for b in buy_range:
+        for s in sell_range:
+            if b > s: 
+                # Run Backtest
+                equity_curve, _ = run_backtest(predictions, actuals, 
+                                            threshold_buy=b, 
+                                            threshold_sell=s)
+                
+                final_pnl = equity_curve[-1] - 100000 # Profit
+                
+                results.append({
+                    'Buy_Threshold': b,
+                    'Sell_Threshold': s,
+                    'Net_Profit': final_pnl
+                })
+    
+    # Convert to DataFrame
+    results_df = pd.DataFrame(results)
+    
+    # Find the Best Combination
+    if not results_df.empty:
+        best_run = results_df.loc[results_df['Net_Profit'].idxmax()]
+        
+        print("-" * 30)
+        print("OPTIMIZATION RESULTS")
+        print("-" * 30)
+        print(f"Best Buy Threshold:   {best_run['Buy_Threshold']} mm")
+        print(f"Best Sell Threshold:  {best_run['Sell_Threshold']} mm")
+        print(f"Max Profit Found:     ₹{best_run['Net_Profit']:,.0f}")
+    else:
+        print("No valid combinations found for grid search.")
+    
+    return results_df
+
 # --- 4. EXECUTION PIPELINE ---
 if __name__ == "__main__":
     # --- Configuration ---
@@ -229,6 +310,21 @@ if __name__ == "__main__":
         plt.title(f"Real Data Model Comparison: {LOCATION} ({test_df.index[0].year}-{test_df.index[-1].year})")
         plt.ylabel("Rainfall (mm)")
         plt.legend()
+        plt.show()
+
+        # --- EXECUTE GRID SEARCH ---
+        optimization_results = grid_search_optimization(xgb_preds, actuals)
+
+        # --- VISUALIZE (The Heatmap) ---
+        heatmap_data = optimization_results.pivot(index='Buy_Threshold', 
+                                                  columns='Sell_Threshold', 
+                                                  values='Net_Profit')
+
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(heatmap_data, annot=True, fmt=".0f", cmap="RdYlGn", cbar_kws={'label': 'Net Profit (₹)'})
+        plt.title("Strategy Optimization Heatmap")
+        plt.ylabel("Buy Threshold (mm)")
+        plt.xlabel("Sell Threshold (mm)")
         plt.show()
     else:
         print("Failed to fetch data. Pipeline aborted.")
