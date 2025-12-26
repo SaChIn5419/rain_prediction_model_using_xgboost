@@ -265,6 +265,8 @@ def run_backtest_smart_monsoon(predictions, actuals, dates, climatology, thresho
     pnl_curve = [capital]
     tick_size = 1000 
     
+    trades = []
+    
     for pred, actual, date in zip(predictions, actuals, dates):
         market_price = climatology.get(date.dayofyear, 0)
         month = date.month
@@ -297,7 +299,18 @@ def run_backtest_smart_monsoon(predictions, actuals, dates, climatology, thresho
         capital += (daily_pnl - cost)
         pnl_curve.append(capital)
         
-    return pnl_curve
+        # Log Trade if significant
+        if position != 0:
+            trades.append({
+                'Date': date,
+                'Type': 'Long' if position == 1 else 'Short',
+                'Pred': pred,
+                'Market': market_price,
+                'Actual': actual,
+                'PnL': (daily_pnl - cost)
+            })
+        
+    return pnl_curve, pd.DataFrame(trades)
 
 def grid_search_optimization(predictions, actuals, dates, climatology):
     # Define the "Parameter Space"
@@ -434,6 +447,10 @@ if __name__ == "__main__":
         equity, trade_log = analyze_performance(xgb_preds, actuals, pred_dates, climatology, 
                                               threshold_buy=5, 
                                               threshold_sell=1)
+        
+        # Save Alpha Log
+        trade_log.to_csv("trades_alpha.csv", index=False)
+        print("💾 Saved Alpha Strategy trades to 'trades_alpha.csv'")
 
         # 1. Plot the Curve
         plt.figure(figsize=(12, 6))
@@ -456,8 +473,12 @@ if __name__ == "__main__":
         
         # --- EXECUTE SMART STRATEGY ---
         print("\n--- 5. Smart Monsoon Strategy (Risk Management) ---")
-        equity_smart = run_backtest_smart_monsoon(xgb_preds, actuals, pred_dates, climatology,
+        equity_smart, trade_log_smart = run_backtest_smart_monsoon(xgb_preds, actuals, pred_dates, climatology,
                                                 threshold_buy=5, threshold_sell=1)
+
+        # Save Smart Log
+        trade_log_smart.to_csv("trades_smart.csv", index=False)
+        print("💾 Saved Smart Strategy trades to 'trades_smart.csv'")
 
         print(f"Original Alpha Capital: ₹{equity[-1]:,.0f}")
         print(f"Smart Strategy Capital: ₹{equity_smart[-1]:,.0f}")
