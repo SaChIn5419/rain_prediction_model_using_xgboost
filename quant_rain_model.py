@@ -215,6 +215,49 @@ def run_backtest_alpha(predictions, actuals, dates, climatology, threshold_buy=5
         
     return pnl_curve, wins, losses
 
+def analyze_performance(predictions, actuals, dates, climatology, threshold_buy=5, threshold_sell=1):
+    capital = 100000 
+    pnl_curve = [capital]
+    tick_size = 1000 
+    
+    trades = [] # Log every trade
+    
+    for pred, actual, date in zip(predictions, actuals, dates):
+        market_price = climatology.get(date.dayofyear, 0)
+        
+        # Signal Generation
+        position = 0
+        if pred > (market_price + threshold_buy):
+            position = 1 
+        elif pred < (market_price - threshold_sell):
+            position = -1 
+            
+        # P&L Calculation
+        daily_pnl = 0
+        if position == 1:
+            daily_pnl = (actual - market_price) * tick_size
+        elif position == -1:
+            daily_pnl = (market_price - actual) * tick_size
+            
+        cost = 200 if position != 0 else 0 
+        net_pnl = daily_pnl - cost
+        
+        capital += net_pnl
+        pnl_curve.append(capital)
+        
+        # Log Trade if significant
+        if position != 0:
+            trades.append({
+                'Date': date,
+                'Type': 'Long' if position == 1 else 'Short',
+                'Pred': pred,
+                'Market': market_price,
+                'Actual': actual,
+                'PnL': net_pnl
+            })
+            
+    return pnl_curve, pd.DataFrame(trades)
+
 def grid_search_optimization(predictions, actuals, dates, climatology):
     # Define the "Parameter Space"
     buy_range = range(5, 30, 2)    # Test Buying at 5mm up to 30mm (Alpha Threshold)
@@ -342,6 +385,34 @@ if __name__ == "__main__":
         plt.title("Strategy Optimization Heatmap")
         plt.ylabel("Buy Threshold (mm)")
         plt.xlabel("Sell Threshold (mm)")
-        plt.show()
+        plt.draw()
+        plt.pause(0.1)
+
+        # --- 5. DETAILED TRADE ANALYSIS ---
+        print("\n--- 4. Detailed Trade Analysis (Alpha Strategy) ---")
+        equity, trade_log = analyze_performance(xgb_preds, actuals, pred_dates, climatology, 
+                                              threshold_buy=5, 
+                                              threshold_sell=1)
+
+        # 1. Plot the Curve
+        plt.figure(figsize=(12, 6))
+        plt.plot(pred_dates, equity[1:], color='green', linewidth=2)
+        plt.title("Cumulative Wealth (Alpha Strategy)")
+        plt.ylabel("Capital (₹)")
+        plt.grid(True, alpha=0.3)
+        plt.yscale('log') # Log scale because returns can be huge
+        plt.draw()
+        plt.pause(0.1)
+
+        # 2. Show the "Jackpot Days"
+        print("\n\n🏆 TOP 5 WINNING DAYS:")
+        print(trade_log.sort_values(by='PnL', ascending=False).head(5)[['Date', 'Type', 'Pred', 'Market', 'Actual', 'PnL']])
+
+        print("\n💀 TOP 5 LOSING DAYS:")
+        print(trade_log.sort_values(by='PnL', ascending=True).head(5)[['Date', 'Type', 'Pred', 'Market', 'Actual', 'PnL']])
+
+        print("\nAnalysis Complete. Graphs are open.")
+        plt.show() # Final blocking call to keep windows open
+
     else:
         print("Failed to fetch data. Pipeline aborted.")
