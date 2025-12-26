@@ -166,68 +166,78 @@ class XGBoostWeatherModel:
         pred_amount = self.reg.predict(X)
         
         final_preds = np.where(prob_wet > 0.5, pred_amount, 0)
-        return final_preds, processed['rain'].values
+        return final_preds, processed['rain'].values, processed.index
 
-def run_backtest(predictions, actuals, threshold_buy=10, threshold_sell=2):
+def run_backtest_alpha(predictions, actuals, dates, climatology, threshold_buy=5, threshold_sell=2):
     """
-    Simulates a P&L (Profit & Loss) curve for a trading strategy.
+    Simulates a P&L (Profit & Loss) curve for a trading strategy against Climatology.
     """
     capital = 100000 # Starting Capital (₹)
     pnl_curve = [capital]
     tick_size = 1000 # ₹1000 per mm movement
     
-    positions = [] # Track trade direction
+    wins = 0
+    losses = 0
     
-    for pred, actual in zip(predictions, actuals):
+    for pred, actual, date in zip(predictions, actuals, dates):
+        # The Market Price (The "Strike")
+        # Handle leap years or missing days by defaulting to 0
+        market_price = climatology.get(date.dayofyear, 0)
+        
         # 1. Generate Signal
+        # We only Buy if our model sees SIGNIFICANTLY more rain than the market expects
         position = 0
-        if pred > threshold_buy:
-            position = 1  # Long (Betting on Heavy Rain)
-        elif pred < threshold_sell:
-            position = -1 # Short (Betting on Dry Day)
+        if pred > (market_price + threshold_buy):
+            position = 1  # Long (We expect a storm the market doesn't see)
+        elif pred < (market_price - threshold_sell):
+            position = -1 # Short (We expect it to be drier than average)
             
-        # 2. Calculate Daily P&L
-        # Profit = Position * (Actual Rain - Market Expectation)
-        # We assume Market Expectation is the "Lag 1" (Naïve Forecast)
-        # (In reality, market expectation is the consensus forecast)
-        market_expectation = pred # Simplifying: Assuming we trade against a "dumb" market
+        # 2. Calculate P&L
+        # In a Swap: You Pay Fixed (Market Price), Receive Floating (Actual)
+        if position == 1:
+            # Long: Profit if Actual > Market Price
+            daily_pnl = (actual - market_price) * tick_size
+        elif position == -1:
+            # Short: Profit if Actual < Market Price
+            daily_pnl = (market_price - actual) * tick_size
+        else:
+            daily_pnl = 0
+            
+        # Transaction Costs (Spread)
+        cost = 200 if position != 0 else 0 
         
-        # If we went Long, we want Actual > Market
-        daily_pnl = position * (actual - market_expectation) * tick_size
-        
-        # Transaction Cost (Bid-Ask Spread)
-        cost = 500 if position != 0 else 0 
-        
+        # Update Stats
+        if daily_pnl - cost > 0: wins += 1
+        if daily_pnl - cost < 0: losses += 1
+            
         capital += (daily_pnl - cost)
         pnl_curve.append(capital)
-        positions.append(position)
         
-    return pnl_curve, positions
+    return pnl_curve, wins, losses
 
-def grid_search_optimization(predictions, actuals):
+def grid_search_optimization(predictions, actuals, dates, climatology):
     # Define the "Parameter Space"
-    buy_range = range(10, 50, 2)   # Test Buying at 10mm up to 50mm (heavier storms)
-    sell_range = range(0, 5, 1)    # Test Selling at 0mm to 5mm (dry days)
+    buy_range = range(5, 30, 2)    # Test Buying at 5mm up to 30mm (Alpha Threshold)
+    sell_range = range(0, 5, 1)    # Test Selling at 0mm to 5mm
     
     results = []
     
-    print("⚙️ Running Grid Search on Strategy Parameters...")
+    print("⚙️ Running Grid Search on Strategy Parameters (Alpha Strategy)...")
     
     for b in buy_range:
         for s in sell_range:
-            if b > s: 
-                # Run Backtest
-                equity_curve, _ = run_backtest(predictions, actuals, 
-                                            threshold_buy=b, 
-                                            threshold_sell=s)
-                
-                final_pnl = equity_curve[-1] - 100000 # Profit
-                
-                results.append({
-                    'Buy_Threshold': b,
-                    'Sell_Threshold': s,
-                    'Net_Profit': final_pnl
-                })
+            # Run Backtest
+            equity_curve, _, _ = run_backtest_alpha(predictions, actuals, dates, climatology, 
+                                        threshold_buy=b, 
+                                        threshold_sell=s)
+            
+            final_pnl = equity_curve[-1] - 100000 # Profit
+            
+            results.append({
+                'Buy_Threshold': b,
+                'Sell_Threshold': s,
+                'Net_Profit': final_pnl
+            })
     
     # Convert to DataFrame
     results_df = pd.DataFrame(results)
@@ -277,19 +287,25 @@ if __name__ == "__main__":
         xgb_model = XGBoostWeatherModel()
         xgb_model.fit(train_df)
 
+        # --- CALCULATE CLIMATOLOGY (Market Price) ---
+        print("\n--- Calculating Climatology (Market Price) ---")
+        train_df['day_of_year'] = train_df.index.dayofyear
+        climatology = train_df.groupby('day_of_year')['rain'].mean()
+
         # 4. Evaluate
         print("\n--- 3. Evaluation ---")
         # Stern Coe (Simulation)
         sc_preds = sc_model.predict(len(test_df), start_state=0)
         
         # XGBoost (Prediction)
-        xgb_preds, actuals = xgb_model.predict(test_df)
+        xgb_preds, actuals, pred_dates = xgb_model.predict(test_df)
 
         # Align lengths
         min_len = min(len(sc_preds), len(xgb_preds))
         sc_preds = sc_preds[:min_len]
         xgb_preds = xgb_preds[:min_len]
         actuals = actuals[:min_len]
+        pred_dates = pred_dates[:min_len]
 
         # Metrics
         sc_error = np.sqrt(mean_squared_error(actuals, sc_preds))
@@ -314,7 +330,7 @@ if __name__ == "__main__":
         plt.pause(0.1) # Non-blocking pause to render plot
 
         # --- EXECUTE GRID SEARCH ---
-        optimization_results = grid_search_optimization(xgb_preds, actuals)
+        optimization_results = grid_search_optimization(xgb_preds, actuals, pred_dates, climatology)
 
         # --- VISUALIZE (The Heatmap) ---
         heatmap_data = optimization_results.pivot(index='Buy_Threshold', 
